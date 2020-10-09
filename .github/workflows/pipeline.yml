@@ -1,0 +1,100 @@
+name: 'Integrado'
+
+on:
+    push:
+        branches:
+        - master
+    pull_request:
+        branches:
+        - master
+
+env:
+  rg_name: 'RG_LABADC'
+  webapp_name: 'webapplabadc' 
+  solution_name: 'Nibo.DevOpsChallenge.sln'
+  package_path: '\publishWebSite'
+
+jobs:
+    Terraform:
+        name: 'Infrastructure'
+        runs-on: ubuntu-latest
+
+        defaults:
+            run:
+                shell: bash
+                working-directory: Infrastructure
+
+        steps:
+        - name: Checkout
+          uses: actions/checkout@v2
+
+        - name: Install Terraform
+          uses: hashicorp/setup-terraform@v1
+          with:
+            cli_config_credentials_token: ${{ secrets.terraform_token }}
+
+        - name: Replace tokens
+          uses: cschleiden/replace-tokens@v1.0
+          with:
+            tokenPrefix: '##'
+            tokenSuffix: '##'
+            files: '["**/*.auto.tfvars"]'
+          env:
+            ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+            ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+            ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+            ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+            resourcegroup_name: ${{ env.rg_name }}
+            appservice_name: ${{ env.webapp_name }}
+
+        - name: Terraform Init
+          run: terraform init
+        
+        - name: Terraform Plan
+          run: terraform plan
+
+        - name: Terraform Apply
+          run: terraform apply -auto-approve
+
+    DotNet:
+        needs: Terraform
+        name: BuildAndDeploy
+        runs-on: windows-latest
+
+        defaults:
+            run:
+                working-directory: DevOpsChallenge
+
+        steps:
+        - name: Checkout
+          uses: actions/checkout@v2
+        
+        - name: Setup MSBuild path
+          uses: microsoft/setup-msbuild@v1.0.1
+          with:
+            vs-version: "[16.4,16.9)"
+        
+        - name: Setup NuGet
+          uses: NuGet/setup-nuget@v1.0.2
+        
+        - name: Restore NuGet packages
+          run: nuget restore ${{ env.solution_name }}
+
+        - name: Build
+          run: msbuild ${{ env.solution_name }} /p:Configuration=Release
+
+        - name: Publish to folder
+          run: msbuild ${{ env.solution_name }} /p:DeployOnBuild=true /p:OutDir=${{ env.package_path }} /p:Configuration=release
+
+        - name: Deploy to Azure WebApp
+          uses: azure/webapps-deploy@v2
+          with:
+            app-name: ${{ env.webapp_name }}
+            package: '${{ env.package_path }}\_PublishedWebsites\Nibo.DevOpsChallenge'
+            publish-profile: ${{ secrets.AZURE_WEB_APP_PUBLISH_PROFILE }}
+
+        - name: Publish artifacts
+          uses: actions/upload-artifact@v1.0.0
+          with:
+            name: webapp
+            path: '${{ env.package_path }}'
